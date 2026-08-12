@@ -1,0 +1,202 @@
+/* LifeLens presentation layer.
+   Colours are the validated data-viz palette (see .streamlit/config.toml).
+   Saturated colour is used for small marks and accents only — thin rules,
+   chips and emoji — never as large blocks, which read loud at this size.
+   The app commits to the light surface, so there is no dark-mode block: the
+   chart palette is stepped and validated for #fcfcfb specifically. */
+
+:root {
+    --surface-1: #fcfcfb;
+    --page-plane: #f9f9f7;
+
+    --ink-primary: #0b0b0b;
+    --ink-secondary: #52514e;
+    --ink-muted: #898781;
+
+    --hairline: #e1e0d9;
+    --baseline: #c3c2b7;
+
+    /* Categorical slots, fixed order. Slot 1/2/3 are also the chart series
+       for birth country / current country / World — same hue, same meaning. */
+    --series-1: #2a78d6;   /* blue    */
+    --series-2: #eb6834;   /* orange  */
+    --series-3: #1baf7a;   /* aqua    */
+    --series-4: #eda100;   /* yellow  */
+    --series-5: #e87ba4;   /* magenta */
+    --series-7: #4a3aa7;   /* violet  */
+
+    /* Status tokens — reserved for good/bad, never reused as a series. */
+    --good: #006300;
+    --critical: #d03b3b;
+}
+
+/* ---------- Hero ---------- */
+
+.lens-hero {
+    padding: 1.4rem 1.6rem;
+    margin-bottom: 1.4rem;
+    border-radius: 14px;
+    border: 1px solid var(--hairline);
+    background:
+        radial-gradient(circle at 12% 20%, rgba(42, 120, 214, 0.13), transparent 45%),
+        radial-gradient(circle at 88% 12%, rgba(235, 104, 52, 0.11), transparent 42%),
+        radial-gradient(circle at 62% 95%, rgba(27, 175, 122, 0.10), transparent 48%),
+        var(--surface-1);
+}
+
+.lens-hero h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0;
+    line-height: 1.15;
+    color: var(--ink-primary);
+}
+
+.lens-hero p {
+    font-size: 1.05rem;
+    color: var(--ink-secondary);
+    margin: 0.4rem 0 0 0;
+}
+
+.lens-hero .lens-chips {
+    margin-top: 0.9rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+/* ---------- Statistic cards ---------- */
+
+.lens-card {
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    padding: 0.9rem 1rem;
+    height: 100%;
+    background: var(--surface-1);
+    /* The accent is a 3px rule, not a fill — colour as a small mark. */
+    border-left: 3px solid var(--accent, var(--baseline));
+}
+
+.lens-card .lens-label {
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-secondary);
+    margin-bottom: 0.3rem;
+}
+
+.lens-card .lens-value {
+    font-size: 1.7rem;
+    font-weight: 700;
+    line-height: 1.15;
+    color: var(--ink-primary);
+}
+
+.lens-card .lens-year {
+    font-size: 0.76rem;
+    color: var(--ink-muted);
+    margin-top: 0.15rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.lens-card .lens-delta {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-top: 0.45rem;
+}
+
+/* Direction of travel. Paired with an arrow glyph in the markup, so the
+   meaning never rests on colour alone. */
+.lens-up { color: var(--good); }
+.lens-down { color: var(--critical); }
+.lens-flat { color: var(--ink-secondary); }
+
+/* A value that could not be retrieved — muted and italic so it never reads
+   as a real number. */
+.lens-missing {
+    color: var(--ink-muted);
+    font-style: italic;
+    font-size: 1.15rem;
+    font-weight: 500;
+}
+
+.lens-note {
+    font-size: 0.82rem;
+    color: var(--ink-secondary);
+    line-height: 1.45;
+}
+
+.lens-flag {
+    font-size: 2.1rem;
+    line-height: 1;
+    margin-bottom: 0.2rem;
+}
+
+/* ---------- Chips ---------- */
+
+.lens-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.76rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+    color: var(--ink-secondary);
+    white-space: nowrap;
+}
+
+.lens-chip .lens-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent, var(--baseline));
+    flex: none;
+}
+
+/* ---------- Discovery cards ---------- */
+
+.lens-milestone {
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--accent, var(--baseline));
+    border-radius: 12px;
+    padding: 0.75rem 0.95rem;
+    margin-bottom: 0.6rem;
+    background: var(--surface-1);
+}
+
+.lens-milestone .lens-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--ink-primary);
+    margin-top: 0.15rem;
+}
+
+.lens-milestone a {
+    color: var(--series-1);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.lens-milestone a:hover { text-decoration: underline; }
+
+/* ---------- Tabs ---------- */
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0.35rem;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.stTabs [data-baseweb="tab"] {
+    font-size: 0.98rem;
+    font-weight: 600;
+    padding: 0.55rem 0.95rem;
+    border-radius: 10px 10px 0 0;
+}
+
+.stTabs [aria-selected="true"] {
+    background: rgba(42, 120, 214, 0.09);
+}

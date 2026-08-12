@@ -1,0 +1,17 @@
+# Theme values come from the validated data-viz palette so the UI chrome and the
+# Plotly series colours are one system rather than two. The app commits to a
+# single light look — the chart palette is stepped for the light surface
+# (#fcfcfb) and validated against it.
+
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f2f1ec"
+textColor = "#0b0b0b"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

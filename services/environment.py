@@ -27,15 +27,24 @@ from typing import Sequence
 
 import pandas as pd
 
-from services.world_bank import Indicator, fetch_indicators
+from services.world_bank import (
+    Indicator,
+    _request,
+    extract_rows,
+    fetch_indicators,
+    parse_indicator_rows,
+)
 
 __all__ = [
     "ENVIRONMENT_INDICATORS",
     "DEFAULT_ENVIRONMENT_CODES",
     "ENVIRONMENT_SOURCE_ATTRIBUTION",
     "ENVIRONMENT_CAVEATS",
+    "NO_WORLD_AGGREGATE_CODES",
     "fetch_environment_indicators",
+    "fetch_country_snapshot",
     "get_environment_indicator",
+    "has_world_aggregate",
     "is_cumulative_meaningful",
 ]
 
@@ -53,6 +62,7 @@ ENVIRONMENT_INDICATORS: dict[str, Indicator] = {
     "NY.ADJ.DNGY.CD": Indicator(
         code="NY.ADJ.DNGY.CD",
         label="Adjusted savings: energy depletion (current US$)",
+        plain_label="Fossil fuels used up",
         short_label="Energy depletion",
         beat="How much energy stock was drawn down",
         unit="current US$",
@@ -73,6 +83,7 @@ ENVIRONMENT_INDICATORS: dict[str, Indicator] = {
     "NY.ADJ.DMIN.CD": Indicator(
         code="NY.ADJ.DMIN.CD",
         label="Adjusted savings: mineral depletion (current US$)",
+        plain_label="Minerals & metals used up",
         short_label="Mineral depletion",
         beat="How much mineral stock was drawn down",
         unit="current US$",
@@ -91,6 +102,7 @@ ENVIRONMENT_INDICATORS: dict[str, Indicator] = {
     "NY.ADJ.DFOR.CD": Indicator(
         code="NY.ADJ.DFOR.CD",
         label="Adjusted savings: net forest depletion (current US$)",
+        plain_label="Forest resources used faster than they regrew",
         short_label="Net forest depletion",
         beat="How much forest was harvested beyond regrowth",
         unit="current US$",
@@ -109,6 +121,7 @@ ENVIRONMENT_INDICATORS: dict[str, Indicator] = {
     "NY.GDP.TOTL.RT.ZS": Indicator(
         code="NY.GDP.TOTL.RT.ZS",
         label="Total natural resources rents (% of GDP)",
+        plain_label="Resource dependence",
         short_label="Resource rents",
         beat="How much of the economy comes from resource extraction",
         unit="% of GDP",
@@ -148,6 +161,21 @@ ENVIRONMENT_CAVEATS: tuple[str, ...] = (
 )
 
 
+# Verified against the API across all 24 World Bank aggregate codes (World,
+# income groups, regions, OECD, EU, IDA/IBRD): the three depletion flows are
+# published for countries only. There is no world, regional or income-group
+# total to fall back on, and summing countries would manufacture one — so the
+# UI offers rank and peers among reporting countries instead.
+NO_WORLD_AGGREGATE_CODES: frozenset[str] = frozenset(
+    {"NY.ADJ.DNGY.CD", "NY.ADJ.DMIN.CD", "NY.ADJ.DFOR.CD"}
+)
+
+
+def has_world_aggregate(code: str) -> bool:
+    """Whether the World Bank publishes a world figure for this series."""
+    return code not in NO_WORLD_AGGREGATE_CODES
+
+
 def get_environment_indicator(code: str) -> Indicator:
     """Look up a depletion indicator, falling back to a generic descriptor.
 
@@ -179,6 +207,23 @@ def is_cumulative_meaningful(code: str) -> bool:
     return not get_environment_indicator(code).is_percentage
 
 
+def _fetch_country_snapshot(code: str, year: int) -> pd.DataFrame:
+    """Every country's value for one indicator in one year.
+
+    One request, one year — the basis for "where does my country sit among the
+    countries that reported". Deliberately *not* summed into a world total:
+    ranking published values is a comparison, adding them up would be an
+    invented aggregate.
+
+    Returns the standard tidy frame, aggregates included; callers filter them
+    out against the real-country list.
+    """
+    payload = _request(
+        f"country/all/indicator/{code}", {"date": str(year), "per_page": 500}
+    )
+    return parse_indicator_rows(extract_rows(payload))
+
+
 def fetch_environment_indicators(
     country_codes: Sequence[str],
     start_year: int,
@@ -199,3 +244,19 @@ def fetch_environment_indicators(
         progress=progress,
         label_for=lambda code: get_environment_indicator(code).short_label,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cached public entry point
+# ---------------------------------------------------------------------------
+# Same pattern as world_bank: wrapped only when Streamlit is importable, so the
+# module stays testable without a Streamlit runtime.
+
+try:  # pragma: no cover - exercised implicitly by the running app
+    import streamlit as st
+
+    fetch_country_snapshot = st.cache_data(ttl=60 * 60 * 24, show_spinner=False)(
+        _fetch_country_snapshot
+    )
+except ImportError:  # pragma: no cover
+    fetch_country_snapshot = _fetch_country_snapshot

@@ -371,10 +371,20 @@ Two rules the summary enforces, both about not overstating: the birth-year
 baseline is only ever taken from a year **at or after** the birth year, and a
 cumulative total is refused for the ratio series.
 
-Coverage note found in testing: the World Bank publishes **no `WLD` aggregate**
-for the three depletion flows, only for resource rents. The tab defaults to the
-world aggregate where it exists and to the first reporting country where it does
-not, and says which on screen.
+Coverage note found in testing: the World Bank publishes **no aggregate at all**
+for the three depletion flows — checked across all 24 aggregate codes (World,
+income groups, regions, OECD, EU, IDA/IBRD). Only resource rents has them.
+
+The tab therefore offers geographies the series actually reports, and answers
+the "my country vs the world" question with **rank and peers among reporting
+countries** (`utils/environment.rank_within`, `top_reporters`), fed by a
+one-year `country/all` snapshot. Ranking published values is a comparison;
+summing them would invent the world total the World Bank does not publish, so
+nothing in that path adds anything up.
+
+Indicator names are plain English in the UI (`Indicator.plain_label`), with the
+official label and code always visible underneath — readable for a general
+audience without losing provenance.
 
 ---
 

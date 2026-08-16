@@ -95,6 +95,10 @@ the latest reported value, cumulative depletion across your lifetime, the peak
 year and value, and how many years were actually reported; a raw-data table; and
 a three-sheet **Excel download** (`annual_data`, `summary`, `methodology`).
 
+Where the World Bank publishes no world total (the three depletion flows), the
+tab shows where a country ranks among all reporting countries instead of a dead
+end — "India ranks 3rd of 216 countries that reported this measure in 2021".
+
 This tab reports **depletion that was recorded**, not reserves that remain — see
 [Depletion is not "what is left"](#depletion-is-not-what-is-left) below.
 
@@ -167,12 +171,16 @@ account; total natural resources rents is a standalone WDI series that draws on
 the same resource-rent estimates, and the app attributes it that way rather than
 folding it into the adjusted-savings family:
 
-| Story beat | Indicator | Code | Unit |
+| Shown as | Official indicator | Code | Unit |
 |---|---|---|---|
-| 🛢️ Energy drawn down | Adjusted savings: energy depletion | `NY.ADJ.DNGY.CD` | current US$ |
-| ⛏️ Minerals drawn down | Adjusted savings: mineral depletion | `NY.ADJ.DMIN.CD` | current US$ |
-| 🌳 Forest harvested beyond regrowth | Adjusted savings: net forest depletion | `NY.ADJ.DFOR.CD` | current US$ |
-| 💵 Extraction's share of the economy | Total natural resources rents | `NY.GDP.TOTL.RT.ZS` | % of GDP |
+| 🛢️ Fossil fuels used up | Adjusted savings: energy depletion | `NY.ADJ.DNGY.CD` | current US$ |
+| ⛏️ Minerals & metals used up | Adjusted savings: mineral depletion | `NY.ADJ.DMIN.CD` | current US$ |
+| 🌳 Forest resources used faster than they regrew | Adjusted savings: net forest depletion | `NY.ADJ.DFOR.CD` | current US$ |
+| 💵 Resource dependence | Total natural resources rents | `NY.GDP.TOTL.RT.ZS` | % of GDP |
+
+The left column is what the tab shows a general reader; the official name and
+code sit underneath it in muted text on every view, so any figure can still be
+traced back to the published series.
 
 None of the four is given a "better" direction: depletion falls in a recession
 as readily as it falls through efficiency, so the app reports the movement and
@@ -199,6 +207,11 @@ Three further honesty constraints apply on this tab:
   is a floor rather than a complete accounting.
 - A reported **zero** (common for net forest depletion, where harvest does not
   exceed growth) is a real observation and is charted as one — it is not a gap.
+  A country reporting zero is described as such rather than given a rank, which
+  would read as a position in a league it is not in.
+- The country ranking orders published values and never sums them. A test
+  asserts that no figure the ranking path produces equals the total of the
+  countries in it.
 
 ### Why GDP is in constant 2015 US$
 
@@ -357,10 +370,13 @@ Notes:
   which requires two distinct bounds. Both the Lifetime in Data and Earth &
   Resources year controls go through the same helper, so neither can regress
   into that case independently.
-- The World Bank publishes **no world aggregate** for the three depletion flows —
-  only for resource rents (% of GDP). The tab therefore defaults to the world
-  aggregate where it exists and to the first reporting country where it does
-  not, and says so on screen rather than drawing an empty chart.
+- The World Bank publishes **no aggregate of any kind** for the three depletion
+  flows — not World, and not any region or income group (verified across all 24
+  aggregate codes). Only resource rents (% of GDP) has them. Rather than a dead
+  end, the tab explains this and answers the comparison question with **rank and
+  peers among reporting countries** — an ordering of published values, never a
+  sum, since adding countries together would manufacture the world total the
+  World Bank declines to publish.
 
 **Application**
 - Milestones are a single hand-curated list covering 1985–2024, not localized per

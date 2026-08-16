@@ -140,6 +140,110 @@ def order_selection(
     return sorted(picked, key=lambda entry: position[entry[0]])
 
 
+# ---------------------------------------------------------------------------
+# Rank and peers among reporting countries
+# ---------------------------------------------------------------------------
+# The honest answer to "how does my country compare with the world" for a
+# series the World Bank publishes for countries only. Ranking published values
+# is a comparison; adding them into a world total would be an invented figure,
+# so nothing here sums anything.
+
+@dataclass(frozen=True)
+class CountryRank:
+    """Where one country sits among the countries that reported that year."""
+
+    country_code: str
+    country_name: str
+    year: int
+    value: float
+    rank: int          # 1 = highest reported value
+    reporting: int     # how many countries reported that year
+
+    @property
+    def is_top_ten(self) -> bool:
+        return self.rank <= 10
+
+    @property
+    def ordinal(self) -> str:
+        """"3rd", "21st" — the rank as it reads in a sentence."""
+        if 10 <= self.rank % 100 <= 20:
+            suffix = "th"
+        else:
+            suffix = {1: "st", 2: "nd", 3: "rd"}.get(self.rank % 10, "th")
+        return f"{self.rank}{suffix}"
+
+
+def countries_only(snapshot: pd.DataFrame, country_codes: Iterable[str]) -> pd.DataFrame:
+    """Drop aggregates from a snapshot, keeping real countries.
+
+    ``country/all`` returns regions and income groups alongside countries, and
+    ranking a country against "South Asia" would be meaningless.
+    """
+    if snapshot is None or snapshot.empty:
+        return snapshot if snapshot is not None else pd.DataFrame()
+    wanted = {str(code).upper() for code in country_codes}
+    return snapshot[snapshot["country_code"].isin(wanted)].copy()
+
+
+def rank_within(snapshot: pd.DataFrame, country_code: str) -> Optional[CountryRank]:
+    """One country's rank among everyone who reported, highest value first.
+
+    Ties share a rank (two countries at the top are both 1st). Returns ``None``
+    when that country did not report, rather than inventing a position for it.
+    """
+    if snapshot is None or snapshot.empty:
+        return None
+
+    wanted = str(country_code).upper()
+    row = snapshot[snapshot["country_code"] == wanted]
+    if row.empty:
+        return None
+
+    record = row.iloc[0]
+    value = float(record["value"])
+    higher = int((snapshot["value"] > value).sum())
+
+    return CountryRank(
+        country_code=wanted,
+        country_name=str(record.get("country_name", "") or wanted),
+        year=int(record["year"]),
+        value=value,
+        rank=higher + 1,
+        reporting=int(len(snapshot)),
+    )
+
+
+def top_reporters(
+    snapshot: pd.DataFrame,
+    limit: int = 10,
+    always_include: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    """The highest reported values, plus any countries that must be shown.
+
+    ``always_include`` keeps the user's own countries on the chart even when
+    they rank well outside the top, so the comparison never silently omits the
+    country the reader came for. Adds a ``rank`` column.
+    """
+    empty = pd.DataFrame(columns=["country_code", "country_name", "year", "value", "rank"])
+    if snapshot is None or snapshot.empty:
+        return empty
+
+    ordered = snapshot.sort_values("value", ascending=False).reset_index(drop=True)
+    ordered["rank"] = [
+        int((ordered["value"] > value).sum()) + 1 for value in ordered["value"]
+    ]
+
+    keep = ordered.head(max(limit, 0))
+    for code in always_include or ():
+        wanted = str(code).upper()
+        if wanted not in set(keep["country_code"]):
+            extra = ordered[ordered["country_code"] == wanted]
+            keep = pd.concat([keep, extra], ignore_index=True)
+
+    columns = [c for c in ["country_code", "country_name", "year", "value", "rank"] if c in keep]
+    return keep[columns].reset_index(drop=True)
+
+
 def peak_observation(series: pd.Series) -> Optional[Observation]:
     """The largest reported value in a series, with the year it occurred.
 

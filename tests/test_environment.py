@@ -11,6 +11,7 @@ All offline — the registry and the pure helpers only, no live requests.
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -26,7 +27,9 @@ from services.environment import (  # noqa: E402
     ENVIRONMENT_CAVEATS,
     ENVIRONMENT_INDICATORS,
     ENVIRONMENT_SOURCE_ATTRIBUTION,
+    NO_WORLD_AGGREGATE_CODES,
     get_environment_indicator,
+    has_world_aggregate,
     is_cumulative_meaningful,
 )
 from utils.environment import (  # noqa: E402
@@ -36,13 +39,16 @@ from utils.environment import (  # noqa: E402
     annual_export_frame,
     build_environment_workbook,
     build_workbook,
+    countries_only,
     cumulative_total,
     methodology_frame,
     order_selection,
     peak_observation,
+    rank_within,
     share_of_peak,
     summarize_depletion,
     summary_export_frame,
+    top_reporters,
     window_frame,
     year_window,
 )
@@ -155,6 +161,173 @@ def test_rents_is_not_attributed_to_the_adjusted_savings_account():
     note = ENVIRONMENT_INDICATORS[RENTS].note
     assert "standalone World Development Indicators series" in note
     assert "not a line of the adjusted savings account" in note
+
+
+# --- plain-English labels ---------------------------------------------------
+
+def test_every_indicator_has_a_plain_english_label():
+    """A general reader should not have to parse "Adjusted savings:"."""
+    for indicator in ENVIRONMENT_INDICATORS.values():
+        assert indicator.plain_label
+        assert "adjusted savings" not in indicator.plain_label.lower()
+        assert indicator.display_label == indicator.plain_label
+
+
+def test_plain_labels_are_the_agreed_wording():
+    assert ENVIRONMENT_INDICATORS[ENERGY].plain_label == "Fossil fuels used up"
+    assert ENVIRONMENT_INDICATORS[MINERAL].plain_label == "Minerals & metals used up"
+    assert (
+        ENVIRONMENT_INDICATORS[FOREST].plain_label
+        == "Forest resources used faster than they regrew"
+    )
+    assert ENVIRONMENT_INDICATORS[RENTS].plain_label == "Resource dependence"
+
+
+def test_official_label_and_code_are_never_lost():
+    """Provenance survives the rename — both still available to the UI."""
+    for code, indicator in ENVIRONMENT_INDICATORS.items():
+        assert indicator.code == code
+        assert indicator.label
+        assert indicator.label != indicator.plain_label
+
+
+def test_development_indicators_fall_back_to_their_official_label():
+    from services.world_bank import INDICATORS
+
+    population = INDICATORS["SP.POP.TOTL"]
+    assert population.plain_label == ""
+    assert population.display_label == population.label
+
+
+# --- world-aggregate availability -------------------------------------------
+
+def test_depletion_flows_have_no_world_aggregate():
+    """Verified against the API: no World, region or income group reports these."""
+    assert NO_WORLD_AGGREGATE_CODES == {ENERGY, MINERAL, FOREST}
+    for code in (ENERGY, MINERAL, FOREST):
+        assert not has_world_aggregate(code)
+
+
+def test_resource_rents_does_have_a_world_aggregate():
+    assert has_world_aggregate(RENTS)
+
+
+# --- rank and peers ---------------------------------------------------------
+
+def snapshot_frame(records):
+    """A one-year, many-country snapshot as returned by country/all."""
+    return pd.DataFrame(
+        [(MINERAL, code, name, 2021, value) for code, name, value in records],
+        columns=["indicator", "country_code", "country_name", "year", "value"],
+    )
+
+
+@pytest.fixture
+def snapshot():
+    return snapshot_frame([
+        ("AUS", "Australia", 68.6),
+        ("CHN", "China", 56.6),
+        ("IND", "India", 29.6),
+        ("CHL", "Chile", 28.1),
+        ("BRA", "Brazil", 23.2),
+        ("USA", "United States", 14.3),
+        ("KEN", "Kenya", 0.0),
+        ("FJI", "Fiji", 0.0),
+        ("WLD", "World", 999.9),      # an aggregate that must be excluded
+        ("SAS", "South Asia", 500.0),  # ditto
+    ])
+
+
+REAL_CODES = ["AUS", "CHN", "IND", "CHL", "BRA", "USA", "KEN", "FJI"]
+
+
+def test_countries_only_drops_aggregates(snapshot):
+    """Ranking India against "South Asia" would be meaningless."""
+    ranked = countries_only(snapshot, REAL_CODES)
+    assert set(ranked["country_code"]) == set(REAL_CODES)
+    assert "WLD" not in set(ranked["country_code"])
+
+
+def test_countries_only_on_an_empty_snapshot():
+    assert countries_only(empty_frame(), REAL_CODES).empty
+
+
+def test_rank_within_places_a_country_among_reporters(snapshot):
+    rank = rank_within(countries_only(snapshot, REAL_CODES), "IND")
+    assert rank.rank == 3
+    assert rank.reporting == 8
+    assert rank.ordinal == "3rd"
+    assert rank.country_name == "India"
+    assert rank.value == pytest.approx(29.6)
+    assert rank.is_top_ten
+
+
+def test_rank_within_counts_only_real_countries(snapshot):
+    """With aggregates left in, India would rank 5th instead of 3rd."""
+    unfiltered = rank_within(snapshot, "IND")
+    filtered = rank_within(countries_only(snapshot, REAL_CODES), "IND")
+    assert unfiltered.rank == 5
+    assert filtered.rank == 3
+
+
+def test_rank_within_is_case_insensitive(snapshot):
+    assert rank_within(countries_only(snapshot, REAL_CODES), "ind").rank == 3
+
+
+def test_rank_within_returns_none_for_a_country_that_did_not_report(snapshot):
+    assert rank_within(countries_only(snapshot, REAL_CODES), "NPL") is None
+
+
+def test_rank_within_on_an_empty_snapshot_is_none():
+    assert rank_within(empty_frame(), "IND") is None
+
+
+def test_rank_within_shares_a_rank_on_ties(snapshot):
+    """Two countries reporting zero are both in the same position."""
+    ranked = countries_only(snapshot, REAL_CODES)
+    kenya = rank_within(ranked, "KEN")
+    fiji = rank_within(ranked, "FJI")
+    assert kenya.rank == fiji.rank == 7
+    assert kenya.value == 0.0
+
+
+def test_ordinal_wording():
+    base = rank_within(snapshot_frame([("IND", "India", 1.0)]), "IND")
+    expected = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 11: "11th", 12: "12th",
+                13: "13th", 21: "21st", 22: "22nd", 101: "101st", 111: "111th"}
+    for number, wording in expected.items():
+        assert replace(base, rank=number).ordinal == wording
+
+
+def test_top_reporters_returns_the_highest_values_in_order(snapshot):
+    table = top_reporters(countries_only(snapshot, REAL_CODES), limit=3)
+    assert list(table["country_code"]) == ["AUS", "CHN", "IND"]
+    assert list(table["rank"]) == [1, 2, 3]
+
+
+def test_top_reporters_keeps_the_users_country_outside_the_top(snapshot):
+    """The reader came for their own country; it must never be dropped."""
+    table = top_reporters(countries_only(snapshot, REAL_CODES), limit=2, always_include=["USA"])
+    assert list(table["country_code"]) == ["AUS", "CHN", "USA"]
+    assert int(table[table["country_code"] == "USA"]["rank"].iloc[0]) == 6
+
+
+def test_top_reporters_does_not_duplicate_a_country_already_in_the_top(snapshot):
+    table = top_reporters(countries_only(snapshot, REAL_CODES), limit=5, always_include=["IND"])
+    assert list(table["country_code"]).count("IND") == 1
+
+
+def test_top_reporters_on_an_empty_snapshot_is_empty():
+    assert top_reporters(empty_frame(), limit=10).empty
+
+
+def test_nothing_in_the_ranking_path_sums_country_values(snapshot):
+    """The guard against inventing a world total: no output equals the sum."""
+    ranked = countries_only(snapshot, REAL_CODES)
+    total = float(ranked["value"].sum())
+    table = top_reporters(ranked, limit=10)
+    assert total not in set(table["value"])
+    assert rank_within(ranked, "AUS").value != total
 
 
 # --- windowing --------------------------------------------------------------

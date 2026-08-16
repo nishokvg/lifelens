@@ -22,8 +22,10 @@ from services.environment import (
     ENVIRONMENT_CAVEATS,
     ENVIRONMENT_INDICATORS,
     ENVIRONMENT_SOURCE_ATTRIBUTION,
+    fetch_country_snapshot,
     fetch_environment_indicators,
     get_environment_indicator,
+    has_world_aggregate,
     is_cumulative_meaningful,
 )
 from services.world_bank import (
@@ -55,10 +57,13 @@ from utils.calculations import (
 )
 from utils.environment import (
     build_environment_workbook,
+    countries_only,
     order_selection,
+    rank_within,
     share_of_peak,
     summarize_depletion,
     summary_export_frame,
+    top_reporters,
     window_frame,
     year_window,
 )
@@ -1346,6 +1351,125 @@ def environment_entries(profile: dict) -> list[tuple[str, str, str]]:
     return entries
 
 
+def render_country_comparison(
+    code: str,
+    indicator,
+    focus,
+    highlight: list[tuple[str, str, str]],
+) -> None:
+    """"How this compares" — rank and peers among the countries that reported.
+
+    This is the honest answer to "how does my country compare with the world"
+    for a series published country by country. It ranks values the World Bank
+    published; it never adds them together, because the sum would be a world
+    total the World Bank does not publish.
+    """
+    if focus is None or focus.latest is None:
+        return
+
+    year = focus.latest.year
+    st.markdown("##### 🌐 How this compares")
+
+    try:
+        snapshot = fetch_country_snapshot(code, year)
+    except WorldBankError as exc:
+        st.caption(f"The country comparison could not be loaded. {exc}")
+        return
+
+    try:
+        real_countries = country_options()
+    except WorldBankError:
+        return
+
+    ranked_frame = countries_only(snapshot, real_countries["code"])
+    if ranked_frame.empty:
+        st.caption(f"No country comparison is available for {year}.")
+        return
+
+    highlight_codes = [entry[0] for entry in highlight if entry[0] != WORLD_CODE]
+    colors = {entry[0]: entry[2] for entry in highlight}
+
+    # --- The sentence a reader actually wants ------------------------------
+    # Phrased so the plain-English name never has to sit mid-sentence, where
+    # "the 17th-highest fossil fuels used up" would not parse.
+    zero_reporters = int((ranked_frame["value"] == 0).sum())
+    sentences = []
+    for country_code in highlight_codes:
+        rank = rank_within(ranked_frame, country_code)
+        if rank is None:
+            continue
+        if rank.value == 0:
+            # A rank built on a zero would read as a position in a league the
+            # country is not really in.
+            sentences.append(
+                f"**{rank.country_name}** recorded **none** in {year} — one of "
+                f"{zero_reporters} reporting countries where the World Bank "
+                f"recorded zero."
+            )
+        else:
+            sentences.append(
+                f"**{rank.country_name}** ranks **{rank.ordinal} of "
+                f"{rank.reporting}** countries that reported this measure in "
+                f"{year} — {format_value(rank.value, indicator)}."
+            )
+    for sentence in sentences:
+        st.markdown(sentence)
+
+    if not sentences and not highlight_codes:
+        # Only the world aggregate is selected — there is no country to place.
+        st.markdown(
+            "Add your birth or current country under **Where** above to see "
+            "where it ranks among the countries that reported."
+        )
+    elif not sentences:
+        st.markdown(
+            f"None of your selected countries reported this measure in {year}, "
+            f"so no ranking can be shown for them."
+        )
+
+    # --- Top reporters, with the user's countries kept on the chart --------
+    table = top_reporters(ranked_frame, limit=10, always_include=highlight_codes)
+    if table.empty:
+        return
+
+    plotted = table.sort_values("value")
+    bar = go.Figure(
+        go.Bar(
+            x=list(plotted["value"]),
+            y=[f"{name} · {int(rank)}" for name, rank in zip(plotted["country_name"], plotted["rank"])],
+            orientation="h",
+            marker_color=[
+                colors.get(country_code, BASELINE)
+                for country_code in plotted["country_code"]
+            ],
+            hovertemplate="<b>%{y}</b><br>" + f"{year}: " + "%{x:,.2f}<extra></extra>",
+        )
+    )
+    bar.update_layout(
+        height=max(320, 30 * len(plotted) + 120),
+        title=f"{indicator.display_label} — highest reporting countries, {year}",
+        margin=dict(l=10, r=10, t=54, b=10),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif"),
+        xaxis_title=indicator.unit,
+        yaxis_title="",
+    )
+    bar.update_xaxes(gridcolor=GRIDLINE, zeroline=False, linecolor=BASELINE,
+                     tickfont=dict(color=INK_MUTED))
+    bar.update_yaxes(showgrid=False, linecolor=BASELINE, tickfont=dict(color=INK_MUTED))
+    st.plotly_chart(bar, width="stretch")
+
+    st.caption(
+        f"Bars are labelled with each country's rank. Your selected countries "
+        f"keep their colour and are shown even when they fall outside the top "
+        f"ten. This ranks the {len(ranked_frame)} countries that reported in "
+        f"{year} — countries that did not report are absent, and the values are "
+        f"never added together into a world total, because the World Bank does "
+        f"not publish one for this series."
+    )
+
+
 def render_environment_errors(errors: dict[str, str]) -> None:
     if not errors:
         return
@@ -1399,10 +1523,13 @@ def render_earth_resources(story: dict) -> None:
     # --- Controls ----------------------------------------------------------
     controls = st.columns([2, 2, 3])
     code = controls[0].selectbox(
-        "Indicator",
+        "What to look at",
         available,
+        # Plain English leads; the official name and code follow underneath, so
+        # a general reader is not asked to parse "Adjusted savings: mineral
+        # depletion" while a careful one can still trace the source.
         format_func=lambda c: (
-            f"{ENVIRONMENT_INDICATORS[c].emoji} {ENVIRONMENT_INDICATORS[c].label}"
+            f"{ENVIRONMENT_INDICATORS[c].emoji} {ENVIRONMENT_INDICATORS[c].display_label}"
         ),
         key="env_indicator",
     )
@@ -1410,15 +1537,17 @@ def render_earth_resources(story: dict) -> None:
 
     for_indicator = frame[frame["indicator"] == code]
     reporting = {str(country) for country in for_indicator["country_code"]}
-    # World first when the World Bank publishes a world aggregate for this
+    # World leads when the World Bank publishes a world aggregate for this
     # series — it does for resource rents, but not for the depletion flows,
     # where the first reporting country leads instead of an empty chart.
     ranked = [entry[0] for entry in entries if entry[0] in reporting]
     default_geographies = ranked[:1] or [entries[0][0]]
 
     chosen = controls[1].multiselect(
-        "Geography",
-        [entry[0] for entry in entries],
+        "Where",
+        # Only geographies the World Bank actually reports for this series. A
+        # option that can only ever draw an empty chart is not a choice.
+        ranked or [entries[0][0]],
         default=default_geographies,
         format_func=lambda c: entry_labels.get(c, c),
         # Availability differs per series, so each indicator keeps its own
@@ -1443,10 +1572,23 @@ def render_earth_resources(story: dict) -> None:
         controls[2], indicator_years, key=f"env_years_{code}", birth_year=birth_year
     )
 
-    if WORLD_CODE not in reporting:
-        st.caption(
-            "The World Bank does not publish a world aggregate for this series, "
-            "so only country-level figures are available here."
+    # Provenance for the plain-English name above — always visible, never a
+    # tooltip, so the official series is one glance away.
+    st.markdown(
+        f'<p class="lens-note">World Bank indicator: <code>{indicator.code}</code>'
+        f" · {indicator.label}</p>",
+        unsafe_allow_html=True,
+    )
+
+    if not has_world_aggregate(code):
+        st.info(
+            f"**There is no world total for this measure.** The World Bank "
+            f"reports {indicator.display_label.lower()} country by country, and "
+            f"publishes no world, regional or income-group total for it. Adding "
+            f"countries together here would invent a figure the World Bank does "
+            f"not publish, so instead you can see where a country ranks among "
+            f"all those that reported — scroll to **How this compares** below.",
+            icon="🌍",
         )
 
     if not chosen:
@@ -1489,8 +1631,11 @@ def render_earth_resources(story: dict) -> None:
         return
 
     focus = summaries[0]
-    fig.update_layout(title=f"{indicator.label} — {focus.country_name}"
-                      if len(summaries) == 1 else indicator.label)
+    fig.update_layout(
+        title=f"{indicator.display_label} — {focus.country_name}"
+        if len(summaries) == 1
+        else indicator.display_label
+    )
     if year_range[0] <= birth_year <= year_range[1]:
         add_year_markers(fig, birth_year, focus.latest.year if focus.latest else None)
     elif focus.latest is not None:
@@ -1510,7 +1655,9 @@ def render_earth_resources(story: dict) -> None:
     )
 
     # --- Summary cards -----------------------------------------------------
-    st.markdown(f"##### {indicator.emoji} {focus.country_name} — recorded depletion")
+    st.markdown(
+        f"##### {indicator.emoji} {focus.country_name} — {indicator.display_label.lower()}"
+    )
 
     if not focus.has_data:
         st.info(
@@ -1645,6 +1792,12 @@ def render_earth_resources(story: dict) -> None:
             f"{focus.country_name}, the first selected geography. The chart and "
             "the export cover every geography selected."
         )
+
+    st.divider()
+
+    render_country_comparison(code, indicator, focus, selected)
+
+    st.divider()
 
     # --- Raw data and export ----------------------------------------------
     table = windowed.rename(

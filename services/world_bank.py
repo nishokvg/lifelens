@@ -57,7 +57,7 @@ class Indicator:
     """One World Bank indicator and everything the UI needs to present it."""
 
     code: str
-    label: str            # full display name
+    label: str            # official World Bank name — provenance, always kept
     short_label: str      # for tight spaces (cards, chart legends)
     beat: str             # the story question this indicator answers
     unit: str
@@ -66,10 +66,19 @@ class Indicator:
     is_percentage: bool   # drives percentage-point vs percent-change wording
     emoji: str = "📊"     # identity glyph — pairs with colour so neither is alone
     note: str = ""        # caveat surfaced in footnotes
+    # Plain-English name for a general audience. Never replaces ``label`` — it
+    # leads, and the official name follows in muted text, so a reader can still
+    # trace any figure back to the published series.
+    plain_label: str = ""
 
     @property
     def direction_is_meaningful(self) -> bool:
         return self.better in ("up", "down")
+
+    @property
+    def display_label(self) -> str:
+        """What the reader sees first: plain English where we have it."""
+        return self.plain_label or self.label
 
 
 # The six MVP indicators. Adding a seventh is one entry here and nothing else.

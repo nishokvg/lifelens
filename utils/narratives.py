@@ -263,6 +263,74 @@ def timeline_interpretation(
     )
 
 
+def depletion_interpretation(summary, indicator, geography_label: str) -> str:
+    """The line under the Earth & Resources chart.
+
+    Deliberately narrow: it states what was *recorded* between two real years
+    and stops there. It never characterises what remains in the ground, and it
+    never turns a nominal cumulative sum into a claim about physical volume.
+    """
+    label = sentence_label(indicator.short_label)
+    where = article_name(geography_label)
+
+    if summary is None or not summary.has_data:
+        return (
+            f"The World Bank has not reported {label} for {where} in this year "
+            f"range, so there is nothing to describe here."
+        )
+
+    latest = summary.latest
+    birth = summary.birth
+    sentence = (
+        f"For {where}, the latest reported {label} is "
+        f"{format_value(latest.value, indicator, compact=False)} in {latest.year}"
+    )
+
+    if birth is not None and birth.year != latest.year:
+        movement = (
+            "higher than"
+            if latest.value > birth.value
+            else "lower than"
+            if latest.value < birth.value
+            else "level with"
+        )
+        baseline = (
+            "your birth year"
+            if birth.year == summary.birth_year
+            else f"{birth.year}, the first reported year of your lifetime"
+        )
+        sentence += (
+            f" — {movement} the "
+            f"{format_value(birth.value, indicator, compact=False)} recorded in "
+            f"{baseline}"
+        )
+    sentence += "."
+
+    if summary.ends_before_birth_year:
+        sentence += (
+            f" This series ends before {summary.birth_year}, so none of it falls "
+            f"inside your lifetime and no lifetime figures are shown."
+        )
+
+    if summary.peak is not None:
+        sentence += (
+            f" The highest recorded year in this range is {summary.peak.year}, at "
+            f"{format_value(summary.peak.value, indicator, compact=False)}."
+        )
+
+    if summary.cumulative is not None:
+        sentence += (
+            f" Across the {summary.reported_years} reported year"
+            f"{'s' if summary.reported_years != 1 else ''} of your lifetime "
+            f"({summary.coverage_label}), the World Bank recorded a total of "
+            f"{format_value(summary.cumulative, indicator, compact=False)} in "
+            f"depletion — a nominal sum of reported annual values, not a "
+            f"statement about what remains in the ground."
+        )
+
+    return sentence
+
+
 def comparison_insight(
     indicator,
     year: int,

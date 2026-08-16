@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import pandas as pd
 import requests
@@ -387,6 +387,7 @@ def fetch_indicators(
     start_year: int,
     end_year: int,
     progress=None,
+    label_for: Optional[Callable[[str], str]] = None,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     """Fetch several indicators, tolerating individual failures.
 
@@ -395,14 +396,18 @@ def fetch_indicators(
     from being returned — this is what makes partial rendering possible.
 
     ``progress`` is an optional ``callable(done, total, label)`` for UI status.
+    ``label_for`` names a code for that progress line; registries outside this
+    module (see ``services/environment.py``) pass their own lookup so the status
+    text reads as a name rather than a code.
     """
     frames: list[pd.DataFrame] = []
     errors: dict[str, str] = {}
     total = len(codes)
+    name_of = label_for or (lambda code: get_indicator(code).short_label)
 
     for index, code in enumerate(codes, start=1):
         if progress is not None:
-            progress(index, total, get_indicator(code).short_label)
+            progress(index, total, name_of(code))
         try:
             frame = fetch_indicator(code, country_codes, start_year, end_year)
         except WorldBankError as exc:

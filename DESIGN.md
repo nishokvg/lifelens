@@ -115,10 +115,13 @@ Every narrative template must read correctly both ways; this is covered by tests
 The five tabs are fixed and must be preserved:
 
 ```
-┌─────────────┬──────────────────┬───────────────┬──────────────────────┬───────────────┐
-│  My Story   │ Lifetime in Data │ My Two Worlds │ Timeline &Discoveries│ Quiz & Share  │
-└─────────────┴──────────────────┴───────────────┴──────────────────────┴───────────────┘
+┌───────────┬──────────────────┬───────────────┬───────────────────────┬───────────────────┬──────────────┐
+│ My Story  │ Lifetime in Data │ My Two Worlds │ Timeline &Discoveries │ Earth & Resources │ Quiz & Share │
+└───────────┴──────────────────┴───────────────┴───────────────────────┴───────────────────┴──────────────┘
 ```
+
+*(Added after the original five: **🌱 Earth & Resources**, § 4.7. The five tabs
+above it are unchanged.)*
 
 **1 · My Story**
 Personalized opening — greeting, formatted birth date, age, days alive. A row of
@@ -156,7 +159,19 @@ Three stacked sections:
    clickable source per row. A timeline year with no milestone renders nothing
    rather than an empty card.
 
-**5 · Quiz & Share**
+**5 · Earth & Resources**
+Resource depletion recorded during the lifetime, from the World Bank's
+adjusted-savings series (§ 4.7). An indicator selector, a geography selector
+(World, birth country, current country — multi-select) and a year-range slider
+drive one line chart marked with the birth year and the latest reported year;
+summary cards for birth-year value, latest reported value, cumulative lifetime
+depletion, peak year, peak value and reported-year count; a raw-data table; a
+three-sheet Excel download; and a methodology block. The tab reports depletion
+*recorded*, never reserves remaining — no reserve counters, no "what is left"
+figures. Cumulative totals are refused for the ratio indicator, where a sum
+across years would be meaningless.
+
+**6 · Quiz & Share**
 Three guess-before-reveal questions drawn from the fetched data, an answer
 comparison showing guess vs actual, a simple score out of three, and a
 downloadable plain-text LifeLens story.
@@ -186,10 +201,12 @@ lifelens/                          ← git repository root
 │   └── config.toml                ← theme + server settings (committed)
 ├── services/
 │   ├── __init__.py
-│   └── world_bank.py              ← API client, INDICATORS registry, caching
+│   ├── world_bank.py              ← API client, INDICATORS registry, caching
+│   └── environment.py             ← depletion registry, fetched via the same client
 ├── utils/
 │   ├── __init__.py
 │   ├── calculations.py            ← deltas, coverage, quiz scoring
+│   ├── environment.py             ← depletion summaries, Excel workbook assembly
 │   ├── formatting.py              ← number/date/age formatting
 │   └── narratives.py              ← template sentences (name-optional)
 ├── data/
@@ -199,7 +216,8 @@ lifelens/                          ← git repository root
 └── tests/
     ├── test_world_bank.py         ← parsing, error shapes, empty data
     ├── test_calculations.py       ← deltas, null baselines, single-point series
-    └── test_timeline.py           ← timeline points, three-year rule, CSV integrity
+    ├── test_timeline.py           ← timeline points, three-year rule, CSV integrity
+    └── test_environment.py        ← depletion maths, peaks, workbook structure
 ```
 
 Assignment evidence (prompt captures, the wireframe document) is kept **outside**
@@ -212,6 +230,7 @@ streamlit~=1.40
 pandas~=2.2
 requests~=2.32
 plotly~=5.24
+openpyxl~=3.1        ← added with Earth & Resources, for the Excel export
 ```
 
 Python version is selected in the Streamlit Cloud **Advanced settings** dropdown
@@ -327,6 +346,35 @@ year,category,title,description,source_url
 Target roughly 25–35 rows spanning 1985 to the present, so any plausible birth
 year yields a populated timeline. Loaded once with `@st.cache_data`, filtered to
 `birth_year <= year <= current_year`.
+
+### 4.7 Environmental indicators — Earth & Resources
+
+A second registry in `services/environment.py`, fetched through the same client
+and normalizing to the same tidy frame:
+
+| Story beat | Code | Unit | Better |
+|---|---|---|---|
+| Energy drawn down | `NY.ADJ.DNGY.CD` | current US$ | — |
+| Minerals drawn down | `NY.ADJ.DMIN.CD` | current US$ | — |
+| Forest harvested beyond regrowth | `NY.ADJ.DFOR.CD` | current US$ | — |
+| Extraction's share of the economy | `NY.GDP.TOTL.RT.ZS` | % of GDP | — |
+
+Kept out of `INDICATORS` on purpose: that registry drives the hero chips and the
+"what changed the most" ranking, and a depletion flow must not be ranked against
+life expectancy. No entry claims a better direction.
+
+The first three are lines of the adjusted net (genuine) savings account;
+`NY.GDP.TOTL.RT.ZS` is not, and is attributed separately rather than being
+folded into that family.
+
+Two rules the summary enforces, both about not overstating: the birth-year
+baseline is only ever taken from a year **at or after** the birth year, and a
+cumulative total is refused for the ratio series.
+
+Coverage note found in testing: the World Bank publishes **no `WLD` aggregate**
+for the three depletion flows, only for resource rents. The tab defaults to the
+world aggregate where it exists and to the first reporting country where it does
+not, and says which on screen.
 
 ---
 

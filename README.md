@@ -85,6 +85,19 @@ that value was actually observed, and a deterministic interpretation; and
 category-filtered discovery cards drawn only from `data/milestones.csv`, each
 with the user's age at the time and a clickable source.
 
+**🌱 Earth & Resources** — the resource-depletion recorded during your lifetime:
+energy, mineral and net forest depletion in current US$ from the World Bank's
+adjusted-savings account, plus total natural resources rents as a share of GDP
+(a standalone WDI series, not an adjusted-savings line).
+Indicator, geography and year-range controls; a Plotly trend chart marking your
+birth year and the latest reported year; summary cards for the birth-year value,
+the latest reported value, cumulative depletion across your lifetime, the peak
+year and value, and how many years were actually reported; a raw-data table; and
+a three-sheet **Excel download** (`annual_data`, `summary`, `methodology`).
+
+This tab reports **depletion that was recorded**, not reserves that remain — see
+[Depletion is not "what is left"](#depletion-is-not-what-is-left) below.
+
 **🎯 Quiz & Share** — not yet implemented; the tab is present in the navigation.
 
 ---
@@ -96,11 +109,15 @@ everything beneath it is plain Python that runs and tests without a Streamlit
 runtime.
 
 ```
-app.py                  layout, five tabs, form, session state, Plotly figures
+app.py                  layout, six tabs, form, session state, Plotly figures
    │
    ├── services/world_bank.py    HTTP, retry, timeout, caching, JSON → tidy frame,
    │                             the six-indicator registry
+   ├── services/environment.py   the four depletion indicators, fetched through
+   │                             the same client and the same tidy contract
    ├── utils/calculations.py     year selection, change arithmetic, timeline, coverage
+   ├── utils/environment.py      depletion summaries, cumulative totals, peak years,
+   │                             Excel workbook assembly
    ├── utils/formatting.py       numbers, values, years, flags, articles
    ├── utils/narratives.py       deterministic template sentences (no LLM)
    └── data/milestones.csv       curated timeline events
@@ -111,12 +128,17 @@ Key decisions:
 - **One tidy DataFrame contract.** Every fetch normalizes to
   `indicator, country_code, country_name, year, value`. Charts, metrics,
   narratives and the timeline all read that one shape.
-- **Fetch once, render five times.** All six indicators for both countries plus
-  the world aggregate are retrieved on submit and held in `session_state`;
-  switching tabs triggers no network activity.
+- **Fetch once, render everywhere.** All six development indicators and the four
+  depletion indicators, for both countries plus the world aggregate, are
+  retrieved on submit and held in `session_state`; switching tabs triggers no
+  network activity.
 - **The indicator registry is data.** Code, label, unit, decimals, direction,
   emoji and caveats live in one dict. Adding an indicator is one entry, not a
   new code path.
+- **Two registries, one client.** The depletion indicators live in their own
+  registry so they are never ranked against life expectancy in the "what
+  changed the most" insight, but they reuse the same HTTP client, caching,
+  parsing and tidy frame.
 - **Missing data is a render state, not an exception.** Every chart, card and
   sentence has a defined empty state.
 
@@ -139,9 +161,44 @@ which is why this app deploys with nothing but a `requirements.txt`.
 | 🏙️ Where we live | Urban population (%) | `SP.URB.TOTL.IN.ZS` | neutral |
 | 👶 Child survival | Under-5 mortality (per 1,000) | `SH.DYN.MORT` | ↓ |
 
+The 🌱 Earth & Resources tab adds four indicators from the same API. The three
+depletion flows are lines of the World Bank's **adjusted net (genuine) savings**
+account; total natural resources rents is a standalone WDI series that draws on
+the same resource-rent estimates, and the app attributes it that way rather than
+folding it into the adjusted-savings family:
+
+| Story beat | Indicator | Code | Unit |
+|---|---|---|---|
+| 🛢️ Energy drawn down | Adjusted savings: energy depletion | `NY.ADJ.DNGY.CD` | current US$ |
+| ⛏️ Minerals drawn down | Adjusted savings: mineral depletion | `NY.ADJ.DMIN.CD` | current US$ |
+| 🌳 Forest harvested beyond regrowth | Adjusted savings: net forest depletion | `NY.ADJ.DFOR.CD` | current US$ |
+| 💵 Extraction's share of the economy | Total natural resources rents | `NY.GDP.TOTL.RT.ZS` | % of GDP |
+
+None of the four is given a "better" direction: depletion falls in a recession
+as readily as it falls through efficiency, so the app reports the movement and
+declines to grade it.
+
 Countries are batched into one request per indicator, so a full story costs six
-HTTP calls rather than eighteen. Responses are cached for 24 hours, and the
-country list for seven days.
+HTTP calls rather than eighteen, plus four for the depletion series. Responses
+are cached for 24 hours, and the country list for seven days.
+
+### Depletion is not "what is left"
+
+The adjusted-savings series measure the **value of resources recorded as drawn
+down in a given year** — an annual flow, valued at that year's resource rents.
+They are not an inventory of what remains underground, and LifeLens never
+presents them as one. There is no reserve counter, no "remaining natural wealth"
+figure and no estimate of how much of anything is left anywhere in the app.
+
+Three further honesty constraints apply on this tab:
+
+- Currency series are in **current US$**, the prices of each year they describe.
+  The cumulative lifetime total is therefore a nominal sum of reported annual
+  values, labelled as such, and is not inflation-adjusted.
+- The cumulative total counts only years the World Bank actually reported, so it
+  is a floor rather than a complete accounting.
+- A reported **zero** (common for net forest depletion, where harvest does not
+  exceed growth) is a real observation and is charted as one — it is not a gap.
 
 ### Why GDP is in constant 2015 US$
 
@@ -160,6 +217,24 @@ change across the series reflects real change in output per person. This is the
 correct choice for any lifetime comparison, and it is why India's rise reads as
 **+369%** here rather than the larger, partly fictitious number current dollars
 would produce.
+
+---
+
+## Excel export
+
+The Earth & Resources tab builds a workbook in memory (via `openpyxl`, the one
+dependency this feature added) covering exactly the indicator, geographies and
+year range currently on screen:
+
+| Sheet | Contents |
+|---|---|
+| `annual_data` | One row per reported observation — `year`, `country_code`, `country_name`, `indicator_code`, `indicator_label`, `value`, `unit` |
+| `summary` | One row per selected geography — birth year, indicator, geography, birth-year value and the year it came from, latest value, latest reported year, cumulative depletion, peak year, peak value, reported-year count, unit |
+| `methodology` | Source attribution, the API endpoint, a definition per indicator, every caveat shown on screen, the current selection, and the UTC export timestamp |
+
+The caveats travel *inside* the workbook, so a downloaded file is never
+separated from the wording that qualifies it. An empty selection still produces
+all three sheets with their headers rather than a failed download.
 
 ---
 
@@ -187,7 +262,7 @@ configuration step is needed.
 
 ```bash
 pip install pytest
-python -m pytest tests/ -q          # 97 offline unit tests
+python -m pytest tests/ -q          # 135 offline unit tests
 ```
 
 The unit suite is fully offline and deterministic — it uses recorded API payload
@@ -249,6 +324,11 @@ Notes:
    real year; beyond that, "Data unavailable".
 7. **Milestones are curated, not generated.** Every discovery card comes from a
    row in `data/milestones.csv` with its own source link.
+8. **Depletion is a flow, not a stock.** The environmental tab reports what the
+   World Bank recorded as depleted in each year. It makes no claim about
+   remaining reserves, and refuses computations that would imply one — a
+   "% of GDP" series is never summed across years, because that total would
+   mean nothing.
 
 ---
 
@@ -266,6 +346,21 @@ Notes:
 - Country coverage varies widely; low-reporting countries produce sparse charts.
 - Figures reflect present-day borders, so countries that did not exist at a given
   birth year simply have shorter series.
+- The depletion series run 1990–2021 and lag further than the development
+  indicators, so a birth year before 1990 has no depletion baseline at birth and
+  the tab labels the first reported year of the lifetime instead. A baseline is
+  never taken from a year before the birth year, so a birth after the series
+  ends yields no baseline and no lifetime total rather than a pre-birth value
+  labelled as one.
+- An indicator with only one reported year in range (a birth in the last
+  reported year, for instance) gets a labelled year rather than a range slider,
+  which requires two distinct bounds. Both the Lifetime in Data and Earth &
+  Resources year controls go through the same helper, so neither can regress
+  into that case independently.
+- The World Bank publishes **no world aggregate** for the three depletion flows —
+  only for resource rents (% of GDP). The tab therefore defaults to the world
+  aggregate where it exists and to the first reporting country where it does
+  not, and says so on screen rather than drawing an empty chart.
 
 **Application**
 - Milestones are a single hand-curated list covering 1985–2024, not localized per
@@ -286,8 +381,11 @@ Explicitly out of scope for this version, listed in DESIGN.md § 6:
 
 parallel fetching with `ThreadPoolExecutor` · global rankings · CAGR ·
 query-parameter sharing · offline snapshot fallback · choropleth maps ·
-animated charts · PDF or PNG export · more than six indicators · LLM integration
-· live Nobel Prize API integration on the timeline.
+animated charts · PDF or PNG export · more than six development indicators ·
+LLM integration · live Nobel Prize API integration on the timeline.
+
+The Excel export listed there as deferred now exists, but only on the 🌱 Earth &
+Resources tab; the other tabs still export CSV.
 
 Nobel Prize data is deliberately absent rather than stubbed: there is no
 placeholder card and no hard-coded prize information anywhere, and a test
@@ -308,6 +406,7 @@ planning captures._
 | 📈 Lifetime in Data | _<!-- ![Lifetime in Data](docs/images/lifetime-data.png) -->_ |
 | 🌍 My Two Worlds | _<!-- ![My Two Worlds](docs/images/two-worlds.png) -->_ |
 | 🗓️ Timeline & Discoveries | _<!-- ![Timeline](docs/images/timeline.png) -->_ |
+| 🌱 Earth & Resources | _<!-- ![Earth and Resources](docs/images/earth-resources.png) -->_ |
 
 ---
 
@@ -324,10 +423,12 @@ lifelens/
 │   └── config.toml            # theme (committed; secrets.toml is not)
 ├── services/
 │   ├── __init__.py
-│   └── world_bank.py          # API client, indicator registry, caching
+│   ├── world_bank.py          # API client, indicator registry, caching
+│   └── environment.py         # depletion indicator registry and fetch
 ├── utils/
 │   ├── __init__.py
 │   ├── calculations.py        # year selection, change arithmetic, timeline
+│   ├── environment.py         # depletion summaries, Excel workbook assembly
 │   ├── formatting.py          # numbers, values, years, flags
 │   └── narratives.py          # deterministic sentence generation
 ├── data/
@@ -338,6 +439,7 @@ lifelens/
     ├── test_world_bank.py
     ├── test_calculations.py
     ├── test_timeline.py
+    ├── test_environment.py    # depletion maths and workbook structure
     └── integration_check.py   # live API check, not part of the unit suite
 ```
 

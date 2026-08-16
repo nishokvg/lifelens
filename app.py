@@ -3,9 +3,9 @@
 A personalized view of how the world changed during one person's lifetime,
 built from the World Bank's World Development Indicators.
 
-Phase 4 status: the input form and the first four tabs (My Story, Lifetime in
-Data, My Two Worlds, Timeline & Discoveries) are live. Quiz & Share is present
-in the navigation and arrives in the next phase. See DESIGN.md.
+Status: the input form and five tabs (My Story, Lifetime in Data, My Two
+Worlds, Timeline & Discoveries, Earth & Resources) are live. Quiz & Share is
+present in the navigation and arrives in the next phase. See DESIGN.md.
 """
 
 from __future__ import annotations
@@ -17,10 +17,20 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from services.environment import (
+    DEFAULT_ENVIRONMENT_CODES,
+    ENVIRONMENT_CAVEATS,
+    ENVIRONMENT_INDICATORS,
+    ENVIRONMENT_SOURCE_ATTRIBUTION,
+    fetch_environment_indicators,
+    get_environment_indicator,
+    is_cumulative_meaningful,
+)
 from services.world_bank import (
     DEFAULT_INDICATOR_CODES,
     INDICATORS,
     SOURCE_ATTRIBUTION,
+    TIDY_COLUMNS,
     WORLD_CODE,
     WorldBankError,
     fetch_countries,
@@ -43,6 +53,15 @@ from utils.calculations import (
     timeline_observation,
     timeline_years,
 )
+from utils.environment import (
+    build_environment_workbook,
+    order_selection,
+    share_of_peak,
+    summarize_depletion,
+    summary_export_frame,
+    window_frame,
+    year_window,
+)
 from utils.formatting import (
     UNAVAILABLE,
     flag_emoji,
@@ -57,6 +76,7 @@ from utils.formatting import (
 from utils.narratives import (
     build_story,
     comparison_insight,
+    depletion_interpretation,
     describe_change,
     headline_insight,
     interpret,
@@ -177,6 +197,45 @@ def stat_card(
         parts.append(f'<div class="lens-delta {tone}">{arrow} {delta}</div>')
     parts.append("</div>")
     return "".join(parts)
+
+
+def year_range_selector(
+    column,
+    years: list[int],
+    key: str,
+    birth_year: int | None = None,
+) -> tuple[int, int] | None:
+    """A year-range slider, or a labelled year when only one was reported.
+
+    Streamlit sliders require ``min_value < max_value``, so an indicator that
+    collapses to a single reported year would raise rather than render. Both
+    tabs that offer a year range go through here, so neither can regress into
+    that crash independently.
+    """
+    window = year_window(years, birth_year)
+    if window is None:
+        return None
+
+    if window.is_single_year:
+        column.markdown(
+            stat_card(
+                "Year range",
+                str(window.first),
+                "the only year reported for this indicator",
+                accent=BASELINE,
+                icon="📅",
+            ),
+            unsafe_allow_html=True,
+        )
+        return (window.first, window.last)
+
+    return column.slider(
+        "Year range",
+        min_value=window.first,
+        max_value=window.last,
+        value=(window.default_start, window.last),
+        key=key,
+    )
 
 
 def delta_state_for(change: Change | None, indicator) -> str:
@@ -308,6 +367,18 @@ def load_story_data(profile: dict) -> dict:
         status.update(label="Could not reach the World Bank API", state="error")
         raise exc
 
+    # Depletion series are fetched in the same pass. Streamlit renders every
+    # tab body on every run, so a "lazy" fetch inside the tab would run anyway;
+    # doing it here keeps the fetch-once-render-many contract intact. A failure
+    # here degrades one tab and never blocks the story.
+    try:
+        environment_frame, environment_errors = fetch_environment_indicators(
+            countries, start_year, end_year, progress=progress
+        )
+    except WorldBankError as exc:
+        environment_frame = pd.DataFrame(columns=TIDY_COLUMNS)
+        environment_errors = {code: str(exc) for code in DEFAULT_ENVIRONMENT_CODES}
+
     if frame.empty:
         status.update(label="No data returned", state="error")
     else:
@@ -319,6 +390,8 @@ def load_story_data(profile: dict) -> dict:
     return {
         "frame": frame,
         "errors": errors,
+        "environment_frame": environment_frame,
+        "environment_errors": environment_errors,
         "profile": profile,
         "start_year": start_year,
         "end_year": end_year,
@@ -630,13 +703,9 @@ def render_lifetime_in_data(story: dict) -> None:
         st.warning(f"No data was returned for {indicator.label}.", icon="⚠️")
         return
 
-    year_range = controls[2].slider(
-        "Year range",
-        min_value=min(all_years),
-        max_value=max(all_years),
-        value=(min(all_years), max(all_years)),
-        key="lid_years",
-    )
+    # Opens on the full range, as before; a single reported year renders a
+    # label instead of a slider rather than raising.
+    year_range = year_range_selector(controls[2], all_years, key="lid_years")
 
     selected = [entry for entry in entries if entry[0] in chosen]
     if not selected:
@@ -1260,6 +1329,383 @@ def render_timeline(story: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tab 5 — Earth & Resources
+# ---------------------------------------------------------------------------
+
+def environment_entries(profile: dict) -> list[tuple[str, str, str]]:
+    """(code, label, colour) with the World first.
+
+    Same colours as ``country_entries`` — an entity keeps its hue everywhere in
+    the app — but the world aggregate leads, because resource depletion is a
+    planetary story before it is a national one.
+    """
+    entries = [(WORLD_CODE, "World", COLOR_WORLD)]
+    entries.append((profile["birth_code"], profile["birth_name"], COLOR_BIRTH))
+    if profile["current_code"] != profile["birth_code"]:
+        entries.append((profile["current_code"], profile["current_name"], COLOR_CURRENT))
+    return entries
+
+
+def render_environment_errors(errors: dict[str, str]) -> None:
+    if not errors:
+        return
+    with st.expander(f"⚠️ {len(errors)} depletion series could not be loaded"):
+        for code, reason in errors.items():
+            st.markdown(f"- **{get_environment_indicator(code).label}** — {reason}")
+
+
+def render_environment_methodology(code: str) -> None:
+    """The caveat block. Identical wording to the exported methodology sheet."""
+    indicator = get_environment_indicator(code)
+    with st.expander("📋 Methodology and caveats"):
+        st.markdown(f"**{indicator.label}** (`{indicator.code}`) — {indicator.note}")
+        for caveat in ENVIRONMENT_CAVEATS:
+            st.markdown(f"- {caveat}")
+        st.caption(ENVIRONMENT_SOURCE_ATTRIBUTION)
+
+
+def render_earth_resources(story: dict) -> None:
+    profile = story["profile"]
+    frame = story.get("environment_frame")
+    errors = story.get("environment_errors", {})
+    birth_year = profile["birth_date"].year
+
+    st.markdown("#### 🌱 Resource depletion during your lifetime")
+    st.markdown(
+        "Three of these indicators are the World Bank's **adjusted savings "
+        "depletion** series — the value of energy, mineral and forest "
+        "resources recorded as drawn down in each reported year — and the "
+        "fourth is **total natural resources rents**, extraction's share of "
+        "the economy. Together they describe what was *depleted*, year by "
+        "year, while you have been alive. They are **not** a measure of what "
+        "remains underground, and nothing on this tab estimates remaining "
+        "reserves."
+    )
+
+    available = [code for code in DEFAULT_ENVIRONMENT_CODES if code not in errors]
+    if frame is None or frame.empty or not available:
+        st.info(
+            "The World Bank returned no depletion observations for these "
+            "countries and years. Nothing is estimated in their place — this "
+            "tab simply has nothing to show.",
+            icon="🌍",
+        )
+        render_environment_errors(errors)
+        return
+
+    entries = environment_entries(profile)
+    entry_labels = {code: label for code, label, _ in entries}
+
+    # --- Controls ----------------------------------------------------------
+    controls = st.columns([2, 2, 3])
+    code = controls[0].selectbox(
+        "Indicator",
+        available,
+        format_func=lambda c: (
+            f"{ENVIRONMENT_INDICATORS[c].emoji} {ENVIRONMENT_INDICATORS[c].label}"
+        ),
+        key="env_indicator",
+    )
+    indicator = get_environment_indicator(code)
+
+    for_indicator = frame[frame["indicator"] == code]
+    reporting = {str(country) for country in for_indicator["country_code"]}
+    # World first when the World Bank publishes a world aggregate for this
+    # series — it does for resource rents, but not for the depletion flows,
+    # where the first reporting country leads instead of an empty chart.
+    ranked = [entry[0] for entry in entries if entry[0] in reporting]
+    default_geographies = ranked[:1] or [entries[0][0]]
+
+    chosen = controls[1].multiselect(
+        "Geography",
+        [entry[0] for entry in entries],
+        default=default_geographies,
+        format_func=lambda c: entry_labels.get(c, c),
+        # Availability differs per series, so each indicator keeps its own
+        # selection rather than inheriting one that reports nothing.
+        key=f"env_geographies_{code}",
+        help="Add your birth or current country to compare against the default.",
+    )
+
+    indicator_years = sorted({int(y) for y in for_indicator["year"]})
+    if not indicator_years:
+        st.warning(
+            f"The World Bank reported no {indicator.short_label.lower()} "
+            f"observations for these countries.",
+            icon="⚠️",
+        )
+        render_environment_errors(errors)
+        return
+
+    # Opens on the birth year where the series covers it. Someone born in the
+    # last reported year gets a single-year label rather than a crash.
+    year_range = year_range_selector(
+        controls[2], indicator_years, key=f"env_years_{code}", birth_year=birth_year
+    )
+
+    if WORLD_CODE not in reporting:
+        st.caption(
+            "The World Bank does not publish a world aggregate for this series, "
+            "so only country-level figures are available here."
+        )
+
+    if not chosen:
+        st.info("Select at least one geography to draw the chart.", icon="ℹ️")
+        render_environment_methodology(code)
+        return
+
+    # Selection order, not registry order: the cards describe whichever
+    # geography the user picked first, and the caption below says so.
+    selected = order_selection(entries, chosen)
+    windowed = window_frame(frame, code, year_range[0], year_range[1], chosen)
+
+    if windowed.empty:
+        st.info(
+            f"No {indicator.short_label.lower()} observations fall inside "
+            f"{year_range[0]}–{year_range[1]} for this selection.",
+            icon="🌍",
+        )
+        render_environment_methodology(code)
+        return
+
+    cumulative_ok = is_cumulative_meaningful(code)
+    summaries = [
+        summarize_depletion(
+            windowed,
+            code,
+            country_code,
+            birth_year,
+            country_name=label,
+            cumulative=cumulative_ok,
+        )
+        for country_code, label, _ in selected
+    ]
+
+    # --- Chart -------------------------------------------------------------
+    fig = go.Figure(series_traces(windowed, code, selected))
+    if not fig.data:
+        st.info("No series could be drawn for this selection.", icon="🌍")
+        render_environment_methodology(code)
+        return
+
+    focus = summaries[0]
+    fig.update_layout(title=f"{indicator.label} — {focus.country_name}"
+                      if len(summaries) == 1 else indicator.label)
+    if year_range[0] <= birth_year <= year_range[1]:
+        add_year_markers(fig, birth_year, focus.latest.year if focus.latest else None)
+    elif focus.latest is not None:
+        fig.add_vline(
+            x=focus.latest.year,
+            line_dash="dot",
+            line_color=COLOR_GOOD,
+            annotation_text=f"📅 Latest reported {focus.latest.year}",
+            annotation_position="top right",
+        )
+    style_figure(fig, indicator)
+    st.plotly_chart(fig, width="stretch")
+    st.caption(
+        "Unreported years are left as gaps rather than joined across. The "
+        "right-hand marker is the latest year the World Bank reported — not "
+        "the current calendar year."
+    )
+
+    # --- Summary cards -----------------------------------------------------
+    st.markdown(f"##### {indicator.emoji} {focus.country_name} — recorded depletion")
+
+    if not focus.has_data:
+        st.info(
+            f"The World Bank reported no {indicator.short_label.lower()} for "
+            f"{focus.country_name} in this range.",
+            icon="🌍",
+        )
+    else:
+        if focus.ends_before_birth_year:
+            st.info(
+                f"This series ends in {focus.latest.year}, before you were born "
+                f"in {birth_year}. The chart above is real reported data, but "
+                f"none of it falls inside your lifetime, so no birth-year "
+                f"baseline or lifetime total is shown.",
+                icon="🌍",
+            )
+
+        top = st.columns(3)
+        if focus.birth is None:
+            top[0].markdown(
+                stat_card(
+                    "Birth-year value",
+                    UNAVAILABLE,
+                    "nothing reported from your birth year onward",
+                    missing=True,
+                    accent=COLOR_BIRTH,
+                    icon="🎂",
+                ),
+                unsafe_allow_html=True,
+            )
+        else:
+            exact = focus.birth.year == birth_year
+            top[0].markdown(
+                stat_card(
+                    "Birth-year value",
+                    format_value(focus.birth.value, indicator),
+                    f"{focus.birth.year} data"
+                    + ("" if exact else " · first reported year of your lifetime"),
+                    accent=COLOR_BIRTH,
+                    icon="🎂",
+                ),
+                unsafe_allow_html=True,
+            )
+        top[1].markdown(
+            stat_card(
+                "Latest reported value",
+                format_value(focus.latest.value, indicator),
+                f"{focus.latest.year} — latest reported year",
+                accent=COLOR_GOOD,
+                icon="📅",
+            ),
+            unsafe_allow_html=True,
+        )
+        if focus.cumulative is None:
+            # Two different reasons, and they must not be confused: a ratio
+            # cannot be summed at all, whereas a currency series simply has
+            # nothing reported inside this lifetime.
+            top[2].markdown(
+                stat_card(
+                    "Cumulative depletion",
+                    "Not applicable" if not cumulative_ok else UNAVAILABLE,
+                    "a share of GDP cannot be summed across years"
+                    if not cumulative_ok
+                    else "nothing reported from your birth year onward",
+                    missing=True,
+                    accent=COLOR_CURRENT,
+                    icon="🧮",
+                ),
+                unsafe_allow_html=True,
+            )
+        else:
+            top[2].markdown(
+                stat_card(
+                    "Cumulative depletion",
+                    format_value(focus.cumulative, indicator),
+                    f"reported years from {max(birth_year, focus.first_year or birth_year)} "
+                    f"onward · nominal, not inflation-adjusted",
+                    accent=COLOR_CURRENT,
+                    icon="🧮",
+                ),
+                unsafe_allow_html=True,
+            )
+
+        bottom = st.columns(3)
+        bottom[0].markdown(
+            stat_card(
+                "Peak year",
+                str(focus.peak.year) if focus.peak else UNAVAILABLE,
+                "highest recorded year in range",
+                missing=focus.peak is None,
+                accent="#eda100",
+                icon="⛰️",
+            ),
+            unsafe_allow_html=True,
+        )
+        against_peak = share_of_peak(focus)
+        peak_note = (
+            f"recorded in {focus.peak.year}" if focus.peak else "not reported"
+        )
+        if against_peak is not None:
+            peak_note += f" · latest is {against_peak:,.0f}% of it"
+        bottom[1].markdown(
+            stat_card(
+                "Peak value",
+                format_value(focus.peak.value, indicator) if focus.peak else UNAVAILABLE,
+                peak_note,
+                missing=focus.peak is None,
+                accent="#eda100",
+                icon="📈",
+            ),
+            unsafe_allow_html=True,
+        )
+        bottom[2].markdown(
+            stat_card(
+                "Coverage years",
+                f"{focus.reported_years}",
+                f"{focus.coverage_label} · reported, not interpolated",
+                accent="#4a3aa7",
+                icon="🗂️",
+            ),
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        f"**What this shows:** "
+        f"{depletion_interpretation(focus, indicator, focus.country_name)}"
+    )
+
+    if len(summaries) > 1:
+        st.caption(
+            "Cards describe "
+            f"{focus.country_name}, the first selected geography. The chart and "
+            "the export cover every geography selected."
+        )
+
+    # --- Raw data and export ----------------------------------------------
+    table = windowed.rename(
+        columns={
+            "indicator": "Indicator",
+            "country_code": "Country code",
+            "country_name": "Country",
+            "year": "Year",
+            "value": "Value",
+        }
+    ).sort_values(["Country", "Year"])
+
+    with st.expander(f"View raw data ({len(table)} observations)"):
+        st.dataframe(table, width="stretch", hide_index=True)
+        if len(summaries) > 1:
+            st.markdown("**Summary, as exported**")
+            st.dataframe(
+                summary_export_frame(summaries, ENVIRONMENT_INDICATORS),
+                width="stretch",
+                hide_index=True,
+            )
+
+    context = {
+        "Birth year": str(birth_year),
+        "Selected indicator": f"{indicator.code} — {indicator.label}",
+        "Selected geography": ", ".join(summary.country_name for summary in summaries),
+        "Year range": f"{year_range[0]}–{year_range[1]}",
+    }
+
+    try:
+        workbook = build_environment_workbook(
+            windowed,
+            summaries,
+            ENVIRONMENT_INDICATORS,
+            ENVIRONMENT_SOURCE_ATTRIBUTION,
+            ENVIRONMENT_CAVEATS,
+            context=context,
+        )
+    except (ImportError, ValueError) as exc:
+        st.warning(
+            f"The Excel workbook could not be assembled ({exc}). Install "
+            "`openpyxl` to enable the download.",
+            icon="⚠️",
+        )
+    else:
+        st.download_button(
+            "⬇️ Download Excel workbook",
+            data=workbook,
+            file_name=(
+                f"lifelens_earth_{code}_{year_range[0]}_{year_range[1]}.xlsx"
+            ),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Three sheets: annual_data, summary and methodology.",
+        )
+
+    render_environment_methodology(code)
+    render_environment_errors(errors)
+    st.caption(f"{ENVIRONMENT_SOURCE_ATTRIBUTION} · Indicator code: {code}")
+
+
+# ---------------------------------------------------------------------------
 # Shared pieces
 # ---------------------------------------------------------------------------
 
@@ -1288,7 +1734,9 @@ def render_prompt() -> None:
     )
     st.markdown(
         "LifeLens compares the world of your birth year with the most recent year "
-        "the World Bank has reported, across six development indicators."
+        "the World Bank has reported, across six development indicators — and, on "
+        "**🌱 Earth & Resources**, the energy, mineral and forest depletion recorded "
+        "during your lifetime."
     )
     columns = st.columns(3)
     accents = [COLOR_BIRTH, COLOR_CURRENT, COLOR_WORLD, "#eda100", "#e87ba4", "#4a3aa7"]
@@ -1345,6 +1793,7 @@ def main() -> None:
             "📈 Lifetime in Data",
             "🌍 My Two Worlds",
             "🗓️ Timeline & Discoveries",
+            "🌱 Earth & Resources",
             "🎯 Quiz & Share",
         ]
     )
@@ -1385,6 +1834,14 @@ def main() -> None:
             render_timeline(story)
 
     with tabs[4]:
+        if story is None:
+            st.info("Press **Explore My Lifetime** in the sidebar to load your data.", icon="👈")
+        else:
+            # Depletion data is fetched separately, so this tab renders even when
+            # the development indicators came back empty.
+            render_earth_resources(story)
+
+    with tabs[5]:
         render_placeholder(
             "Quiz & Share",
             "Arriving in the final phase.",

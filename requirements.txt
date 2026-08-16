@@ -3,3 +3,5 @@ streamlit>=1.50,<2.0
 pandas>=2.2,<3.0
 requests>=2.32,<3.0
 plotly>=5.24,<6.0
+# Excel engine for the Earth & Resources workbook export (pandas.ExcelWriter).
+openpyxl>=3.1,<4.0
